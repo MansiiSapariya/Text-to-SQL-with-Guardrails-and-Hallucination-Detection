@@ -1,0 +1,88 @@
+version: "3.9"
+
+services:
+  # ─── PostgreSQL Database ───────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: textsql_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-textsql}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-textsql_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-chinook}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./seed/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-textsql} -d ${POSTGRES_DB:-chinook}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ─── Read-Only DB User Setup ───────────────────────────────────────────────
+  db-setup:
+    image: postgres:16-alpine
+    container_name: textsql_db_setup
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-textsql_secret}
+    entrypoint: >
+      sh -c "
+        psql -h db -U ${POSTGRES_USER:-textsql} -d ${POSTGRES_DB:-chinook} -c \"
+          DO \$\$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'textsql_readonly') THEN
+              CREATE ROLE textsql_readonly LOGIN PASSWORD '${READONLY_PASSWORD:-readonly_secret}';
+            END IF;
+          END
+          \$\$;
+          GRANT CONNECT ON DATABASE ${POSTGRES_DB:-chinook} TO textsql_readonly;
+          GRANT USAGE ON SCHEMA public TO textsql_readonly;
+          GRANT SELECT ON ALL TABLES IN SCHEMA public TO textsql_readonly;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO textsql_readonly;
+        \"
+      "
+    restart: "no"
+
+  # ─── FastAPI Backend ───────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: textsql_api
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-textsql}:${POSTGRES_PASSWORD:-textsql_secret}@db/${POSTGRES_DB:-chinook}
+      READ_ONLY_DATABASE_URL: postgresql+asyncpg://textsql_readonly:${READONLY_PASSWORD:-readonly_secret}@db/${POSTGRES_DB:-chinook}
+    depends_on:
+      db:
+        condition: service_healthy
+      db-setup:
+        condition: service_completed_successfully
+    volumes:
+      - ./backend/app:/app/app   # hot reload in dev
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  # ─── React Frontend ────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: textsql_frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+    volumes:
+      - ./frontend/src:/app/src   # hot reload
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
