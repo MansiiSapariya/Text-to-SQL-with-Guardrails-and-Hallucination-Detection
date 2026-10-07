@@ -1,231 +1,325 @@
 # QueryLens — Text-to-SQL with Guardrails & Hallucination Detection
 
-A production-grade natural language SQL interface over the Chinook music store database.
-Translates plain English into SQL, executes safely with multi-layer guardrails,
-detects hallucinations with LLM-as-judge back-translation, and reports a composite confidence score.
-
-**Eval Results:** 92% execution accuracy | 100% destructive query block rate | 87% hallucination detection rate
-
----
+QueryLens is a natural-language SQL interface over the Chinook music store database. It translates plain-English questions into SQL, executes them safely through a multi-layer guardrail system, detects potential hallucinations using LLM-based back-translation and result sanity checks, and reports a composite confidence score.
 
 ## Architecture
 
-```
+```text
 User Question
      │
      ▼
-Schema Filtering (sentence-transformers + FAISS)
+Schema Filtering
+(sentence-transformers + FAISS)
+     │
      │ focused schema context
      ▼
-SQL Generation (Groq llama-3.3-70b via instructor)
-     │ structured output: sql, explanation, confidence, tables_used
+SQL Generation
+(Groq + Instructor)
+     │
+     │ SQL + explanation + confidence
      ▼
 Guardrail Middleware
-     ├─ Block DDL/DML (CREATE, DROP, INSERT, UPDATE, DELETE)
-     ├─ Enforce LIMIT (inject LIMIT 500 if missing)
-     ├─ Max subquery depth (3 levels)
-     └─ Forbidden keyword filter
-     │ safe SQL only
+     ├─ DDL/DML blocking
+     ├─ Multi-statement blocking
+     ├─ LIMIT enforcement (500)
+     ├─ Subquery depth limit (3)
+     ├─ Forbidden keyword filtering
+     └─ Comment stripping
+     │
      ▼
-Sandboxed Execution (read-only PG user + READ ONLY transaction)
-     │ DataFrame + execution time + row count
+Sandboxed Execution
+(PostgreSQL read-only user + READ ONLY transaction)
+     │
      ▼
 Hallucination Detection
-     ├─ Back-translation: "What does this SQL answer?" → cosine similarity
-     └─ Result sanity checks (empty results, high NULL rate, suspicious aggregates)
+     ├─ SQL back-translation
+     └─ Result sanity checks
      │
      ▼
-Confidence Scoring (weighted composite, 0–1)
+Confidence Scoring
      │
      ▼
-FastAPI Response → React Frontend
+FastAPI → React Frontend
 ```
 
 ## Tech Stack
 
 | Layer | Technology |
-|-------|-----------|
-| LLM | Groq `llama-3.3-70b-versatile` (free tier) |
-| Structured Output | `instructor` library |
-| SQL Validation | `sqlglot` |
-| Database | PostgreSQL 16 (Chinook schema) |
-| Schema Filtering | `sentence-transformers` + FAISS |
+|---|---|
+| LLM | Groq — `openai/gpt-oss-120b` |
+| Structured Output | Instructor |
+| SQL Validation | SQLGlot |
+| Database | PostgreSQL 16 |
+| Dataset | Chinook Music Store |
+| Schema Filtering | Sentence Transformers + FAISS |
 | Backend | FastAPI + asyncpg |
 | Frontend | React + Vite |
-| Container | Docker + docker-compose |
+| Containerization | Docker + Docker Compose |
+| Configuration | Pydantic Settings |
 
----
+## Key Features
+
+- Natural-language → SQL generation
+- Embedding-based schema filtering
+- Structured LLM output using Pydantic + Instructor
+- SQL syntax validation with SQLGlot
+- DDL/DML protection
+- Multi-statement query blocking
+- Forbidden keyword detection
+- Automatic `LIMIT 500`
+- Maximum subquery depth of 3
+- SQL comment stripping
+- Read-only PostgreSQL execution
+- LLM-based hallucination detection
+- Result sanity checks
+- Composite confidence scoring
+- Query history and feedback
+- Interactive React frontend
 
 ## Quick Start
 
 ### Prerequisites
+
 - Docker Desktop
-- A free [Groq API key](https://console.groq.com) (14,400 requests/day free)
+- Groq API key
 
 ### 1. Clone and configure
 
 ```bash
-git clone <repo>
+git clone <your-repository-url>
 cd text-to-sql
 cp .env.example .env
-# Edit .env and add your GROQ_API_KEY
 ```
 
-### 2. Launch everything
+Add your API key to `.env`:
+
+```env
+GROQ_API_KEY=your_groq_api_key_here
+LLM_PROVIDER=groq
+LLM_MODEL=openai/gpt-oss-120b
+```
+
+> Never commit `.env` or API keys to GitHub.
+
+### 2. Launch
 
 ```bash
 docker compose up --build
 ```
 
-This will:
-1. Start PostgreSQL and seed it with the Chinook database automatically
-2. Create a read-only database user for sandboxed query execution
-3. Start the FastAPI backend (downloads sentence-transformers model on first run)
-4. Start the React frontend
+Docker automatically:
 
-### 3. Open the app
+- Starts PostgreSQL
+- Initializes the Chinook database
+- Creates the read-only database user
+- Starts the FastAPI backend
+- Downloads the sentence-transformers model on first startup
+- Starts the React frontend
+
+### 3. Open the application
 
 | Service | URL |
-|---------|-----|
-| **Frontend** | http://localhost:5173 |
-| **API Docs** | http://localhost:8000/docs |
-| **API Health** | http://localhost:8000/health |
+|---|---|
+| Frontend | http://localhost:5173 |
+| API Docs | http://localhost:8000/docs |
+| API Health | http://localhost:8000/health |
 
----
-
-## Using a Different LLM (Google Gemini)
-
-If you prefer Gemini (also free):
-1. Get a free key at [Google AI Studio](https://aistudio.google.com)
-2. In `.env`, set:
-   ```
-   LLM_PROVIDER=gemini
-   GEMINI_API_KEY=your_key_here
-   LLM_MODEL=gemini-2.0-flash
-   ```
-
----
+These URLs are for local development.
 
 ## Example Queries
 
-```
-Which artist has sold the most tracks?
-Show total revenue by country
+```text
+Which artist sold the most tracks?
 Top 5 customers by spending
-What genres generate the most revenue?
-Monthly sales trend for 2013
+What is the total revenue for each genre?
+Show total revenue by country
+What were the monthly sales in 2025?
 Which employees support the most customers?
 ```
 
-Try a dangerous query to see the guardrail in action:
-```
-DROP TABLE Artist
+You can also test the safety system with destructive requests such as:
+
+```text
+Delete all customers from the database
 ```
 
----
+or SQL such as:
+
+```sql
+DROP TABLE Artist;
+```
+
+Destructive operations are rejected before database execution.
+
+## Hallucination Detection
+
+QueryLens uses two complementary approaches:
+
+### SQL Back-Translation
+
+The generated SQL is sent through an LLM-as-judge step that answers:
+
+> What question does this SQL answer?
+
+The generated interpretation is compared with the original question to estimate semantic alignment.
+
+### Result Sanity Checks
+
+Execution results are checked for suspicious conditions including:
+
+- Empty results
+- High NULL rates
+- Suspicious aggregates
+
+These signals contribute to the final confidence score.
+
+## Confidence Scoring
+
+The final confidence score combines multiple signals:
+
+| Signal | Weight |
+|---|---:|
+| Syntax validity | 0.10 |
+| Model self-confidence | 0.15 |
+| Back-translation alignment | 0.40 |
+| Result sanity | 0.20 |
+| Schema coverage | 0.15 |
+
+Grades:
+
+- 🟢 **High:** > 0.80
+- 🟡 **Medium:** 0.50–0.80
+- 🔴 **Low:** < 0.50
+
+## Guardrail Rules
+
+| Rule | Action | Description |
+|---|---|---|
+| DDL Block | BLOCK | Prevents CREATE, ALTER, DROP, etc. |
+| DML Block | BLOCK | Prevents INSERT, UPDATE, DELETE, etc. |
+| Multi-Statement | BLOCK | Prevents multiple SQL statements |
+| LIMIT Enforcement | MODIFY | Injects LIMIT 500 when missing |
+| Subquery Depth | BLOCK | Rejects queries exceeding 3 nested SELECT levels |
+| Forbidden Keywords | BLOCK | Blocks EXECUTE, COPY, pg_read_file, etc. |
+| Comment Stripping | MODIFY | Removes SQL comments before execution |
+
+The guardrail layer has been directly tested against destructive SQL, multi-statement queries, dangerous PostgreSQL functions, deeply nested subqueries, comments, and queries without explicit limits.
+
+## API Reference
+
+### `POST /v1/query`
+
+Converts a natural-language question into SQL and executes it through the complete pipeline.
+
+```json
+{
+  "question": "Which artist sold the most tracks?",
+  "session_id": "optional-session-id"
+}
+```
+
+Response includes:
+
+```text
+sql
+sql_explanation
+results
+columns
+row_count
+execution_time_ms
+confidence
+guardrail_warnings
+hallucination_flags
+assumptions
+is_answerable
+clarification_needed
+error
+```
+
+### `GET /v1/schema`
+
+Returns the introspected database schema.
+
+### `GET /v1/history?session_id=...`
+
+Returns query history for a session.
+
+### `POST /v1/feedback`
+
+Records feedback for a generated query.
+
+```json
+{
+  "query_id": "...",
+  "correct": true
+}
+```
 
 ## Project Structure
 
-```
+```text
 text-to-sql/
 ├── backend/
 │   ├── app/
-│   │   ├── config.py              # pydantic-settings config
-│   │   ├── main.py                # FastAPI app + lifespan
+│   │   ├── config.py
+│   │   ├── main.py
 │   │   ├── database/
-│   │   │   ├── connection.py      # SQLAlchemy engines
-│   │   │   ├── schema_extractor.py# Schema introspection
-│   │   │   └── seed.py            # Chinook DB seeder
+│   │   │   ├── connection.py
+│   │   │   ├── schema_extractor.py
+│   │   │   └── seed.py
 │   │   ├── llm/
-│   │   │   ├── client.py          # instructor-wrapped Groq/Gemini client
-│   │   │   ├── models.py          # Pydantic output models
-│   │   │   └── prompts.py         # Prompt templates + few-shot examples
+│   │   │   ├── client.py
+│   │   │   ├── models.py
+│   │   │   └── prompts.py
 │   │   ├── pipeline/
-│   │   │   ├── schema_filter.py   # Embedding-based schema relevance
-│   │   │   ├── sql_generator.py   # Main SQL generation orchestrator
-│   │   │   ├── guardrails.py      # Safety middleware (6 rules)
-│   │   │   ├── executor.py        # Sandboxed query runner
-│   │   │   ├── hallucination.py   # Back-translation + sanity checks
-│   │   │   └── confidence.py      # Composite confidence scorer
+│   │   │   ├── schema_filter.py
+│   │   │   ├── sql_generator.py
+│   │   │   ├── guardrails.py
+│   │   │   ├── executor.py
+│   │   │   ├── hallucination.py
+│   │   │   └── confidence.py
 │   │   └── api/routes/
-│   │       ├── query.py           # POST /v1/query (full pipeline)
-│   │       ├── schema.py          # GET /v1/schema
-│   │       └── history.py         # GET /v1/history, POST /v1/feedback
+│   │       ├── query.py
+│   │       ├── schema.py
+│   │       └── history.py
 │   └── Dockerfile
-├── frontend/                      # React + Vite UI
-├── seed/init.sql                  # Chinook PostgreSQL seed (auto-applied)
+├── frontend/
+├── seed/
+│   └── init.sql
 ├── docker-compose.yml
 ├── .env.example
 └── README.md
 ```
 
----
+## Development Without Docker
 
-## API Reference
-
-### `POST /v1/query`
-```json
-{
-  "question": "Which artist sold the most tracks?",
-  "session_id": "optional-uuid"
-}
-```
-
-Response includes: `sql`, `sql_explanation`, `results`, `confidence` (with breakdown), `guardrail_warnings`, `hallucination_flags`, `assumptions`.
-
-### `GET /v1/schema`
-Returns the full introspected database schema.
-
-### `GET /v1/history?session_id=...`
-Returns past queries for a session.
-
-### `POST /v1/feedback`
-```json
-{ "query_id": "...", "correct": true }
-```
-
----
-
-## Guardrail Rules
-
-| Rule | Action | Description |
-|------|--------|-------------|
-| DDL Block | BLOCK | Prevents CREATE, ALTER, DROP, TRUNCATE |
-| DML Block | BLOCK | Prevents INSERT, UPDATE, DELETE, MERGE |
-| Multi-Statement | BLOCK | Prevents SQL injection via multiple statements |
-| LIMIT Enforcement | MODIFY | Injects `LIMIT 500` if not present |
-| Subquery Depth | BLOCK | Rejects queries with >3 nested subqueries |
-| Forbidden Keywords | BLOCK | Blocks EXECUTE, COPY, pg_read_file, etc. |
-
----
-
-## Confidence Score Breakdown
-
-| Signal | Weight | Description |
-|--------|--------|-------------|
-| Syntax validity | 0.10 | sqlglot parse check |
-| Model self-confidence | 0.15 | LLM's own score |
-| Back-translation alignment | 0.40 | Strongest hallucination signal |
-| Result sanity | 0.20 | Anomaly detection on results |
-| Schema coverage | 0.15 | Expected vs actual tables used |
-
-Grades: 🟢 High (>0.80) | 🟡 Medium (0.50–0.80) | 🔴 Low (<0.50)
-
----
-
-## Development (without Docker)
+### Backend
 
 ```bash
-# Backend
 cd backend
 pip install -r requirements.txt
-# Seed the DB (requires local PostgreSQL)
-python -m app.database.seed
-# Start API
-uvicorn app.main:app --reload --port 8000
 
-# Frontend
+# Requires local PostgreSQL
+python -m app.database.seed
+
+uvicorn app.main:app --reload --port 8000
+```
+
+### Frontend
+
+```bash
 cd frontend
 npm install
 npm run dev
+```
+
+## Future Improvements
+
+- Larger automated evaluation datasets
+- More comprehensive hallucination benchmarks
+- Improved schema retrieval
+- Additional SQL dialect support
+- Persistent query history
+- Authentication and authorization
+- Production deployment and observability
 ```
